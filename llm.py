@@ -18,8 +18,27 @@ from insights import inr, _inr_short
 MODEL = "llama-3.3-70b-versatile"
 
 
-def _client():
+def _get_groq_key():
+    """GROQ key from env var (local dev) or st.secrets (Streamlit Cloud deploy).
+
+    Checks the env var first so local runs don't touch st.secrets; falls back to
+    st.secrets["GROQ_API_KEY"] for the deployed app, where there's no shell to
+    export env vars. Wrapped in try/except so a missing secrets file is harmless.
+    """
     key = os.environ.get("GROQ_API_KEY")
+    if key:
+        return key
+    try:
+        import streamlit as st
+        if "GROQ_API_KEY" in st.secrets:
+            return st.secrets["GROQ_API_KEY"]
+    except Exception:
+        pass
+    return None
+
+
+def _client():
+    key = _get_groq_key()
     if not key:
         return None
     try:
