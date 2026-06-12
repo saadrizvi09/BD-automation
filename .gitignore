@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Streamlit real secrets — NEVER commit (the .example template is fine)
+.streamlit/secrets.toml
+
+# Local build artifacts (regenerated/downloadable; not part of the app)
+cleaned_data.xlsx
+sample_data.zip
+
+# Office lock / temp files (created while a workbook is open)
+~$*
+
+# Claude Code local settings
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Personal scratch notes
+i.txt
