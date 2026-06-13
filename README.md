@@ -64,6 +64,40 @@ This pushes `sample_bookings/partners/leads` into tabs you can then read back.
 > A live Sheets connection is a network dependency — if conference wifi is shaky,
 > demo with *Load sample data* instead.
 
+## Privacy & service accounts (what to tell a company)
+
+The Google connection uses a **service account** — a robot Google identity with its
+own email (e.g. `bd-report-bot@your-project.iam.gserviceaccount.com`), **not** your
+personal Gmail. You can't (and shouldn't) log the app in as yourself; instead you
+**share your sheet with the robot's email**, exactly like sharing with a colleague.
+
+**Setup (one service account covers everything — read raw tabs + write the report back):**
+
+| Step | Do this | Where |
+|---|---|---|
+| 1 | Create a free project | [console.cloud.google.com](https://console.cloud.google.com/) |
+| 2 | Enable the **Google Sheets API** | APIs & Services → Library |
+| 3 | Create a **Service Account** | IAM & Admin → Service Accounts |
+| 4 | On it → **Keys → Add key → JSON** → download `key.json` | Service Account → Keys |
+| 5 | Open your sheet → **Share** → paste the account's `client_email` as **Editor** | your Google Sheet |
+| 6 | Upload `key.json` + paste the sheet URL in the app's **🔗 Connect a Google Sheet** panel | the app |
+
+The app shows the exact email to share with once you upload the key.
+
+**Why this is privacy-safe (lead with this in the interview):**
+- **Least privilege** — the bot can *only* see sheets you explicitly share with it.
+  Not your Drive, not your email. Un-share to revoke access instantly. No personal login.
+- **Raw data never leaves your control** — cleaning, the decision engine (₹-at-risk,
+  recruitment list, anomalies) and all charts are **100% local pandas**.
+- **The LLM never sees a raw row** — Groq gets only computed aggregates + column
+  schemas to polish wording, and the whole app runs **fully with the LLM switched off**.
+- **Self-hostable, zero-dollar** — runs on the company's own laptop/server; the Sheets
+  link is optional, with file upload and sample data as offline fallbacks.
+
+One-liner: *"Our data stays in our own sheet; the app gets a read-by-invitation robot
+key, does all the analysis locally, and the AI only ever sees anonymized totals — and
+it works even with the AI off."*
+
 ## How it works (modules)
 | File | Role |
 |---|---|
