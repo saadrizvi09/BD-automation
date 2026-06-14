@@ -86,9 +86,20 @@ def load_and_merge(files):
     return data, merge_log
 
 
+def ensure_samples(data_dir=None):
+    """Generate the sample files if they're missing (they're git-ignored, so a
+    fresh clone / Streamlit Cloud deploy won't have them). Idempotent + cheap."""
+    data_dir = data_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    needed = ("sample_bookings.xlsx", "sample_partners.xlsx", "sample_leads.xlsx")
+    if not all(os.path.exists(os.path.join(data_dir, f)) for f in needed):
+        import data_generator
+        data_generator.main()
+    return data_dir
+
+
 def load_samples(data_dir=None):
     """Load the three bundled sample files for the scripted demo."""
-    data_dir = data_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    data_dir = ensure_samples(data_dir)
     raw = {
         "bookings": pd.read_excel(os.path.join(data_dir, "sample_bookings.xlsx")),
         "partners": pd.read_excel(os.path.join(data_dir, "sample_partners.xlsx")),

@@ -33,7 +33,10 @@ SAMPLE_FILES = {
 
 @st.cache_data(show_spinner=False)
 def _sample_bytes(filename):
-    """Read a bundled sample file once, then serve from cache (keeps deploy light)."""
+    """Read a sample file once, then serve from cache. Sample data is git-ignored,
+    so generate it on first access if missing (fresh clone / Streamlit Cloud)."""
+    from ingest import ensure_samples
+    ensure_samples(DATA_DIR)
     with open(os.path.join(DATA_DIR, filename), "rb") as f:
         return f.read()
 
