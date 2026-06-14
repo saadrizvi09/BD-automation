@@ -255,6 +255,57 @@ def dynamic_chart(result_df, intent):
     return fig
 
 
+def nps_trend(weekly):
+    """NPS% (bars) + average rating (line, right axis) by week — the headline trend."""
+    if weekly is None or len(weekly) == 0:
+        return _empty("NPS & rating trend (no ratings)")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=weekly["period"], y=weekly["nps"], name="NPS",
+                         marker_color="#2563eb", yaxis="y1"))
+    fig.add_trace(go.Scatter(x=weekly["period"], y=weekly["avg_rating"],
+                             name="Avg rating", mode="lines+markers",
+                             line=dict(color="#16a34a", width=3), yaxis="y2"))
+    fig.update_layout(
+        title="Weekly NPS & average rating",
+        yaxis=dict(title="NPS"),
+        yaxis2=dict(title="Avg rating", overlaying="y", side="right", range=[1, 5]),
+        **{k: v for k, v in LAYOUT.items() if k != "title"},
+    )
+    return fig
+
+
+def nps_by_jobtype_chart(by_jt):
+    """NPS by job type for the latest week — ranked worst-first (act here)."""
+    if by_jt is None or len(by_jt) == 0:
+        return _empty("NPS by job type (no ratings)")
+    d = by_jt.sort_values("nps")
+    colors = ["#dc2626" if v < 0 else ("#f59e0b" if v < 50 else "#16a34a")
+              for v in d["nps"]]
+    fig = go.Figure(go.Bar(
+        x=d["nps"], y=d["job_type"], orientation="h",
+        marker_color=colors, text=[f"{v:.0f}" for v in d["nps"]],
+        textposition="outside",
+    ))
+    fig.update_layout(title="NPS by job type (latest week — worst first)",
+                      **{k: v for k, v in LAYOUT.items() if k != "title"})
+    fig.update_xaxes(title="NPS")
+    fig.update_yaxes(title="")
+    return fig
+
+
+def ratings_conversion_trend(weekly):
+    """Ratings conversion % (ratings ÷ bids) by week — how many jobs get rated."""
+    if weekly is None or len(weekly) == 0:
+        return _empty("Ratings conversion (no ratings)")
+    fig = px.line(x=weekly["period"], y=weekly["ratings_conv_pct"], markers=True,
+                  title="Ratings conversion % by week",
+                  color_discrete_sequence=["#7c3aed"])
+    fig.update_layout(**LAYOUT)
+    fig.update_yaxes(title="Ratings ÷ bids", ticksuffix="%")
+    fig.update_xaxes(title="")
+    return fig
+
+
 def build_all(bookings, partners=None):
     return {
         "revenue_by_category": revenue_by_category(bookings),

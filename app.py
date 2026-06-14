@@ -20,6 +20,7 @@ import streamlit as st
 import insights
 import charts
 import llm
+import nps
 from ingest import load_and_merge, load_samples
 from export import build_pptx, build_pdf
 
@@ -126,10 +127,25 @@ def _run_report(data):
     targets = insights.suggested_targets(bookings)
     churn = insights.churn_risk(partners, bookings)
 
+    # NPS & ratings tracker (automates the company "WTD / MoM NPS" spreadsheet)
+    nps_block = None
+    if nps.has_ratings(bookings):
+        weekly = nps.tracker(bookings, freq="W")
+        monthly = nps.tracker(bookings, freq="M")
+        by_jt = nps.by_jobtype(bookings, freq="W")
+        nps_block = {
+            "weekly": weekly, "monthly": monthly, "by_jobtype": by_jt,
+            "grid": nps.display_grid(weekly), "headline": nps.headline(weekly),
+            "trend": charts.nps_trend(weekly),
+            "by_jt_chart": charts.nps_by_jobtype_chart(by_jt),
+            "conv_trend": charts.ratings_conversion_trend(weekly),
+        }
+
     elapsed = time.time() - t0
     st.session_state.report = {
         "kpis": kpis, "gap": gap, "alerts": alerts, "figs": figs,
         "memo": memo, "forecast": fc, "targets": targets, "churn": churn,
+        "nps": nps_block,
         "headline": insights.gap_headline(gap), "elapsed": elapsed,
     }
     return elapsed
@@ -489,6 +505,47 @@ if rep:
             st.dataframe(pd.DataFrame(churn["partners"]), use_container_width=True, hide_index=True)
     else:
         st.success("No partners flagged at churn risk this week.")
+
+    # ---- NPS & ratings tracker (automates the company WTD/MoM NPS sheet) ----
+    npsb = rep.get("nps")
+    if npsb:
+        st.divider()
+        st.header("⭐ NPS & Ratings Tracker")
+        st.caption("Auto-built from the raw bookings — the weekly **WTD / MoM** NPS grid "
+                   "an analyst rebuilds by hand with SUMIFS. NPS = (promoters − detractors); "
+                   "5★ = promoter, 4★ = passive, ≤3★ = detractor.")
+        st.markdown(f"### {npsb['headline']}")
+
+        nt1, nt2 = st.columns(2)
+        nt1.plotly_chart(npsb["trend"], use_container_width=True)
+        nt2.plotly_chart(npsb["by_jt_chart"], use_container_width=True)
+
+        st.markdown("#### Weekly tracker (most recent first)")
+        grid = npsb["grid"]
+        if len(grid):
+            fmt = {c: "{:.1f}" for c in grid.columns}
+            st.dataframe(grid.style.format("{:.1f}"), use_container_width=True)
+
+        cjt, cdl = st.columns([3, 2])
+        with cjt:
+            st.markdown("#### NPS by job type — worst first (act here)")
+            bjt = npsb["by_jobtype"]
+            if len(bjt):
+                show = bjt.copy()
+                show.columns = ["Job type", "NPS", "Avg rating", "Rated", "NPS Δ WoW"]
+                st.dataframe(show, use_container_width=True, hide_index=True)
+        with cdl:
+            st.markdown("#### ")
+            xls = nps.to_excel_bytes(npsb["weekly"], npsb["monthly"], npsb["by_jobtype"])
+            if xls:
+                st.download_button(
+                    "⬇️ Download NPS tracker (.xlsx)", data=xls,
+                    file_name="NPS_Ratings_Tracker.xlsx", use_container_width=True,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    help="Weekly (WTD), Monthly (MoM) and By-job-type tabs — "
+                         "the deliverable that replaces the hand-built sheet.",
+                )
+            st.plotly_chart(npsb["conv_trend"], use_container_width=True)
 
     st.divider()
 

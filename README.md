@@ -113,6 +113,20 @@ One-liner: *"Our data stays in our own sheet; the app gets a read-by-invitation 
 key, does all the analysis locally, and the AI only ever sees anonymized totals — and
 it works even with the AI off."*
 
+## NPS & Ratings Tracker (automates the weekly WTD / MoM NPS sheet)
+Marketplace ops teams keep a spreadsheet where an analyst dumps raw job ratings
+into a `[DUMP]` tab and rebuilds — every week — a grid of **NPS** (promoters −
+detractors), **average rating**, **ratings conversion** (ratings ÷ bids) and
+**% good vs poor**, sliced **by job type** with **WoW / MoM** deltas. This app
+reproduces that whole grid automatically from the cleaned bookings (`nps.py`):
+- Weekly (WTD) + Monthly (MoM) tracker tables, transposed to the familiar layout.
+- **NPS by job type**, ranked worst-first ("fix here").
+- Charts: NPS + avg-rating trend, NPS by job type, ratings-conversion trend.
+- One-click **Download NPS tracker (.xlsx)** (Weekly / Monthly / By-job-type tabs).
+- NPS on a 5★ scale (promoter = 5★, passive = 4★, detractor ≤3★) — every threshold
+  is a named constant in `nps.py`, so it's explainable in one sentence and easy to
+  retune to your firm's definition.
+
 ## How it works (modules)
 | File | Role |
 |---|---|
@@ -121,6 +135,7 @@ it works even with the AI off."*
 | `gsheets.py` | Read raw data from / write the report back to a private Google Sheet (service-account auth). CLI to populate a test sheet. |
 | `cleaning.py` | Deterministic cleaning (hardcoded maps + rapidfuzz fallback), robust mixed-date parsing, cleaning log. |
 | `insights.py` | **Decision engine** — demand/supply gap, ₹ at risk, anomalies, churn, forecast. Every threshold is a named constant, each rule explainable in one sentence. |
+| `nps.py` | **NPS & Ratings tracker** — weekly/monthly NPS, avg rating, ratings conversion, % good/poor, by job type with WoW/MoM. Automates the hand-built `[DUMP]`→SUMIFS sheet. |
 | `charts.py` | 8 polished plotly figures (₹ formatting, sorted bars, % labels). |
 | `llm.py` | Groq (memo / cleaning / NL chat) — **every call has a deterministic fallback**, so the app works fully offline. |
 | `export.py` | One-click `.pptx` deck (+ optional `.pdf`). Chart images via kaleido with a **hard timeout + probe**, falling back to a clean text+table deck if kaleido is slow/unavailable — the download never hangs. |
