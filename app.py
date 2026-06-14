@@ -21,6 +21,7 @@ import insights
 import charts
 import llm
 import nps
+import auto
 from ingest import load_and_merge, load_samples
 from export import build_pptx, build_pdf
 
@@ -350,6 +351,27 @@ if _generic:
     with st.expander("Preview the data"):
         st.dataframe(gdf.head(20), use_container_width=True)
 
+    # ---- universal auto-analysis: profile -> KPIs -> charts -> summary ----
+    try:
+        prof = auto.profile(gdf)
+        st.markdown("**🤖 Auto-analysis** — " + auto.summary(gdf, prof))
+        kp = auto.kpis(gdf, prof)
+        if kp:
+            kcols = st.columns(len(kp))
+            for col, (lbl, val) in zip(kcols, kp):
+                col.markdown(f"<div class='kpi-card'><div class='kpi-val'>{val}</div>"
+                             f"<div class='kpi-lbl'>{lbl}</div></div>", unsafe_allow_html=True)
+        afigs = auto.auto_figs(gdf, prof)
+        for r in range(0, len(afigs), 2):
+            cc = st.columns(2)
+            for j, fig in enumerate(afigs[r:r + 2]):
+                cc[j].plotly_chart(fig, use_container_width=True, key=f"auto_{sel}_{r + j}")
+        if afigs:
+            st.caption("Auto-built from the columns above. Ask below for anything specific.")
+    except Exception as e:
+        st.caption(f"(Auto-analysis skipped: {e}) — you can still ask questions below.")
+
+    st.markdown("#### 💬 Ask this sheet")
     for i, msg in enumerate(st.session_state.sheet_chat):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
