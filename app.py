@@ -170,8 +170,8 @@ with st.expander("📁 Or download the sample (dummy) data — try the upload fl
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
-        except FileNotFoundError:
-            col.caption(f"{label}: run `data_generator.py`")
+        except Exception:
+            col.caption(f"{label}: unavailable — click **Load sample data** to generate it")
 
 if load_sample:
     try:
@@ -181,8 +181,8 @@ if load_sample:
         st.session_state.merge_log = mlog
         st.session_state.load_time = time.time() - t0
         st.session_state.report = None
-    except FileNotFoundError:
-        st.error("Sample data not found. Run `python data_generator.py` first to create the data/ files.")
+    except Exception as e:
+        st.error(f"Could not load/generate sample data: {e}")
 
 if uploaded:
     t0 = time.time()
