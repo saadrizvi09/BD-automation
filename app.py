@@ -66,7 +66,7 @@ st.markdown("""
 def _init():
     for k, v in {
         "data": None, "merge_log": None, "report": None,
-        "load_time": None, "chat_history": [],
+        "load_time": None, "chat_history": [], "sheet_chat": [],
         "gs_url": "", "gs_creds": None,
     }.items():
         if k not in st.session_state:
@@ -88,14 +88,23 @@ def _get_service_account():
 
 def _cleaned_xlsx_bytes(data):
     """The exact CLEANED tables, as a multi-sheet .xlsx — so any number the app
-    reports can be reproduced in Excel (e.g. SUMIFS) to the rupee."""
+    reports can be reproduced in Excel (e.g. SUMIFS) to the rupee. Returns None
+    if there's nothing to write (openpyxl needs ≥1 sheet)."""
     import io
+    sheets = []
+    for name in ("bookings", "partners", "leads"):
+        df = data.get(name)
+        if df is not None and len(df):
+            sheets.append((name, df))
+    for name, df in (data.get("generic") or {}).items():
+        if df is not None and len(df):
+            sheets.append((str(name)[:31], df))  # Excel sheet-name limit
+    if not sheets:
+        return None
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        for name in ("bookings", "partners", "leads"):
-            df = data.get(name)
-            if df is not None and len(df):
-                df.to_excel(w, sheet_name=name, index=False)
+        for name, df in sheets:
+            df.to_excel(w, sheet_name=name, index=False)
     return buf.getvalue()
 
 
@@ -276,20 +285,78 @@ if st.session_state.merge_log:
                 st.write(f"- Invalid ₹ values fixed: **{clog.get('invalid_values_fixed', 0)}**")
                 st.write(f"- Blank city/category handled: **{clog.get('blank_city_or_category', 0)}**")
 
-        st.download_button(
-            "⬇️ Download CLEANED data (.xlsx) — verify any number in Excel",
-            data=_cleaned_xlsx_bytes(st.session_state.data),
-            file_name="cleaned_data.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            help="This is the exact dataset the app and chat query. "
-                 "Run e.g. =SUMIFS(H:H, C:C, \"Mumbai\", J:J, \"completed\") to match revenue.",
-        )
+        _xlsx = _cleaned_xlsx_bytes(st.session_state.data)
+        if _xlsx is not None:
+            st.download_button(
+                "⬇️ Download CLEANED data (.xlsx) — verify any number in Excel",
+                data=_xlsx,
+                file_name="cleaned_data.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                help="This is the exact dataset the app and chat query. "
+                     "Run e.g. =SUMIFS(H:H, C:C, \"Mumbai\", J:J, \"completed\") to match revenue.",
+            )
 
-    gen = st.button("🚀 Generate Report", type="primary", use_container_width=True)
-    if gen or st.session_state.report:
-        if not st.session_state.report:
-            with st.spinner("Cleaning done — running decision engine, charts & memo..."):
-                _run_report(st.session_state.data)
+    _bk = st.session_state.data.get("bookings") if st.session_state.data else None
+    _has_bookings = _bk is not None and len(_bk) > 0
+    if _has_bookings:
+        gen = st.button("🚀 Generate Report", type="primary", use_container_width=True)
+        if gen or st.session_state.report:
+            if not st.session_state.report:
+                with st.spinner("Cleaning done — running decision engine, charts & memo..."):
+                    _run_report(st.session_state.data)
+    else:
+        st.info("This looks like a **custom sheet** (no `booking_id` column), so the BD "
+                "Action Center doesn't apply — but scroll to **🔎 Ask your own sheet** below "
+                "to query it in plain English and build charts.")
+
+
+# ----------------------------------------------------------------------------
+# Ask your own sheet — schema-agnostic Q&A over ANY uploaded/custom table
+# ----------------------------------------------------------------------------
+_generic = st.session_state.data.get("generic") if st.session_state.data else None
+if _generic:
+    st.divider()
+    st.header("🔎 Ask your own sheet")
+    st.caption("These tables don't match the BD bookings template, so the Action Center "
+               "doesn't apply — but you can still ask them anything in plain English and get "
+               "numbers + charts. The AI only reads the **column names** (and a few category "
+               "labels), never your rows — and it works with the AI off, via keyword parsing.")
+
+    names = list(_generic.keys())
+    sel = st.selectbox("Which sheet?", names, key="generic_pick")
+    gdf = _generic[sel]
+    st.caption(f"**{sel}** — {len(gdf):,} rows × {len(gdf.columns)} columns: "
+               + ", ".join(map(str, list(gdf.columns)[:12]))
+               + (" …" if len(gdf.columns) > 12 else ""))
+    with st.expander("Preview the data"):
+        st.dataframe(gdf.head(20), use_container_width=True)
+
+    for i, msg in enumerate(st.session_state.sheet_chat):
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("fig") is not None:
+                st.plotly_chart(msg["fig"], use_container_width=True, key=f"sheet_fig_{i}")
+            elif msg.get("df") is not None:
+                st.dataframe(msg["df"], use_container_width=True)
+
+    # a form (not st.chat_input) so it never clashes with the bookings chat below
+    with st.form("sheet_q_form", clear_on_submit=True):
+        sq = st.text_input(
+            "Ask this sheet",
+            placeholder="e.g. 'total amount by status', 'count of rows by owner', "
+                        "'pie chart of spend by category', 'average score by region'",
+            label_visibility="collapsed",
+        )
+        asked = st.form_submit_button("Ask", use_container_width=True)
+    if asked and sq:
+        st.session_state.sheet_chat.append({"role": "user", "content": sq})
+        answer, gres, gintent = llm.ask_table(sq, gdf)
+        gfig = charts.dynamic_chart(gres, gintent)
+        st.session_state.sheet_chat.append(
+            {"role": "assistant", "content": answer,
+             "df": gres if gres is not None else None, "fig": gfig}
+        )
+        st.rerun()
 
 
 # ----------------------------------------------------------------------------
@@ -424,27 +491,35 @@ if rep:
 
     # ---- ask-anything chat ----
     st.header("💬 Ask anything")
-    st.caption("Ad-hoc Q&A over the data — like pinging the analyst, e.g. "
-               "*'revenue by city'*, *'AC Service cancellations'*, *'bookings trend'*.")
+    st.caption("Ad-hoc Q&A over the data — like pinging the analyst. Ask for a chart too, "
+               "e.g. *'pie chart of revenue by category'*, *'bar chart of bookings by city'*, "
+               "*'revenue trend'*, *'AC Service cancellations'*.")
 
-    for msg in st.session_state.chat_history:
+    for i, msg in enumerate(st.session_state.chat_history):
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            if msg.get("df") is not None:
+            if msg.get("fig") is not None:
+                st.plotly_chart(msg["fig"], use_container_width=True, key=f"chat_fig_{i}")
+            elif msg.get("df") is not None:
                 st.dataframe(msg["df"], use_container_width=True)
 
-    q = st.chat_input("Ask about revenue, bookings, AOV, ratings, cancellations...")
+    q = st.chat_input("Ask for a number or a chart — revenue, bookings, AOV, ratings, cancellations...")
     if q:
         st.session_state.chat_history.append({"role": "user", "content": q})
         with st.chat_message("user"):
             st.markdown(q)
-        answer, df, _intent = llm.chat_answer(q, st.session_state.data["bookings"])
+        answer, df, intent = llm.chat_answer(q, st.session_state.data["bookings"])
+        fig = charts.dynamic_chart(df, intent)
         with st.chat_message("assistant"):
             st.markdown(answer)
-            if df is not None and len(df):
+            if fig is not None:
+                st.plotly_chart(fig, use_container_width=True,
+                                key=f"chat_fig_{len(st.session_state.chat_history)}")
+            elif df is not None and len(df):
                 st.dataframe(df, use_container_width=True)
         st.session_state.chat_history.append(
-            {"role": "assistant", "content": answer, "df": df if df is not None else None}
+            {"role": "assistant", "content": answer,
+             "df": df if df is not None else None, "fig": fig}
         )
 
 else:

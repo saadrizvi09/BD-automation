@@ -197,6 +197,64 @@ def _empty(title):
     return fig
 
 
+# ----------------------------------------------------------------------------
+# Dynamic chart for the chat box — built from a query result + the parsed intent
+# ----------------------------------------------------------------------------
+_METRIC_LABEL = {"revenue": "Revenue", "gmv": "Revenue", "bookings": "Bookings",
+                 "aov": "AOV", "rating": "Avg rating", "cancellations": "Cancellation %"}
+
+
+def dynamic_chart(result_df, intent):
+    """Turn a chat query result (a 1-column DataFrame indexed by the group) into
+    a pie / bar / line figure, per the intent's chart_type. Returns None when a
+    chart doesn't make sense (no grouping, empty data, or chart_type 'none')."""
+    if result_df is None or len(result_df) == 0:
+        return None
+    intent = intent or {}
+    group_by = intent.get("group_by")
+    ctype = intent.get("chart_type", "bar")
+    if not group_by or ctype in (None, "none"):
+        return None
+
+    s = result_df.iloc[:, 0].dropna()
+    if len(s) == 0:
+        return None
+
+    metric = intent.get("metric", "value")
+    label = _METRIC_LABEL.get(metric, str(metric).replace("_", " ").title())
+    ml = str(metric).lower()
+    is_money = metric in ("revenue", "gmv", "aov") or any(
+        k in ml for k in ("inr", "revenue", "gmv", "aov", "amount", "value",
+                          "sales", "price", "cost", "spend", "₹"))
+    agg = intent.get("agg")
+    prefix = {"mean": "Avg ", "min": "Min ", "max": "Max ",
+              "median": "Median "}.get(agg, "")
+    labels = [str(i) for i in s.index]
+    values = [float(v) for v in s.values]
+    title = f"{prefix}{label} by {str(group_by).replace('_', ' ')}"
+
+    if ctype == "pie":
+        fig = px.pie(names=labels, values=values, title=title,
+                     color_discrete_sequence=PALETTE)
+        fig.update_traces(textposition="inside", textinfo="percent+label")
+    elif ctype == "line":
+        fig = px.line(x=labels, y=values, markers=True, title=title,
+                      color_discrete_sequence=["#2563eb"])
+        if is_money:
+            fig.update_yaxes(tickprefix="₹", separatethousands=True)
+    else:  # bar (default) — horizontal, ranked
+        txt = [f"₹{v:,.0f}" if is_money else f"{v:,.0f}" for v in values]
+        fig = px.bar(x=values, y=labels, orientation="h", title=title,
+                     color_discrete_sequence=["#2563eb"], text=txt)
+        fig.update_yaxes(autorange="reversed", title="")
+        if is_money:
+            fig.update_xaxes(tickprefix="₹", separatethousands=True)
+        fig.update_traces(textposition="outside")
+
+    fig.update_layout(**LAYOUT)
+    return fig
+
+
 def build_all(bookings, partners=None):
     return {
         "revenue_by_category": revenue_by_category(bookings),

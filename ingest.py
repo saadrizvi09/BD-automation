@@ -34,9 +34,33 @@ def _detect_kind(df):
     return "unknown"
 
 
+def coerce_types(df):
+    """Best-effort: turn mostly-numeric text columns into real numbers so a
+    custom sheet can be aggregated. Leaves a column alone unless ≥80% parse.
+    (Sheets/CSV often deliver numbers as strings — and some pandas builds type
+    text as StringDtype, not object — so we test by trying to parse, not dtype.)"""
+    out = df.copy()
+    for c in out.columns:
+        if pd.api.types.is_numeric_dtype(out[c]) or pd.api.types.is_datetime64_any_dtype(out[c]):
+            continue
+        num = pd.to_numeric(out[c], errors="coerce")
+        if num.notna().sum() > 0 and num.notna().mean() >= 0.8:
+            out[c] = num
+    return out
+
+
+def _table_name(raw_name, existing):
+    base = os.path.splitext(os.path.basename(str(raw_name)))[0].strip() or "table"
+    name, i = base, 2
+    while name in existing:
+        name, i = f"{base}_{i}", i + 1
+    return name
+
+
 def load_and_merge(files):
     """files: list of uploaded file objects or paths. Returns (data, merge_log)."""
     raw = {"bookings": None, "partners": None, "leads": None}
+    generic = {}
     detected = []
 
     for f in files:
@@ -49,10 +73,15 @@ def load_and_merge(files):
         if kind in raw and raw[kind] is None:
             raw[kind] = df
             detected.append(f"{getattr(f, 'name', 'file')} → {kind} ({len(df)} rows)")
+        elif kind == "unknown":
+            name = _table_name(getattr(f, "name", "table"), generic)
+            generic[name] = coerce_types(df)
+            detected.append(f"{name} → custom table ({len(df)} rows × {len(df.columns)} cols)")
         else:
             detected.append(f"{getattr(f, 'name', 'file')} → {kind} (ignored)")
 
     data, cleaning_logs = _clean_and_join(raw)
+    data["generic"] = generic
     merge_log = _build_log(data, detected, cleaning_logs)
     return data, merge_log
 
@@ -102,6 +131,7 @@ def _clean_and_join(raw):
     data["bookings"] = bookings
     data["partners"] = partners
     data["leads"] = leads
+    data["generic"] = {}
     data["_enriched"] = enriched
     return data, cleaning_logs
 
@@ -112,17 +142,27 @@ def _build_log(data, detected, cleaning_logs):
     nl = len(data.get("leads", []))
     n_files = sum(1 for k in ("bookings", "partners", "leads") if len(data.get(k, [])) > 0)
     enriched = data.get("_enriched", 0)
+    generic = data.get("generic", {}) or {}
 
-    summary = (
-        f"Merged {n_files} file(s) — {nb:,} bookings"
-        + (f" enriched with {npart} partner records" if npart else "")
-        + (f", {nl:,} acquisition leads loaded" if nl else "")
-        + "."
-    )
+    if nb or npart or nl:
+        summary = (
+            f"Merged {n_files} file(s) — {nb:,} bookings"
+            + (f" enriched with {npart} partner records" if npart else "")
+            + (f", {nl:,} acquisition leads loaded" if nl else "")
+            + (f", {len(generic)} custom table(s)" if generic else "")
+            + "."
+        )
+    elif generic:
+        summary = (f"Loaded {len(generic)} custom table(s) "
+                   f"({', '.join(generic.keys())}) — ask them anything below.")
+    else:
+        summary = "No recognizable tables found."
+
     return {
         "summary": summary,
         "detected": detected,
         "bookings_enriched": enriched,
         "cleaning": cleaning_logs,
-        "counts": {"bookings": nb, "partners": npart, "leads": nl},
+        "counts": {"bookings": nb, "partners": npart, "leads": nl,
+                   "generic": len(generic)},
     }

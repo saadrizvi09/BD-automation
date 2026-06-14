@@ -31,6 +31,21 @@ macOS/Linux: `source venv/bin/activate`, `export GROQ_API_KEY=...`.
 4. **Download leadership deck (.pptx)** — the Monday deliverable in one click.
 5. **Ask anything** — ad-hoc Q&A over the data (e.g. "revenue by city").
 
+## Ask your own sheet (works on ANY data, not just the BD template)
+Upload — or connect a Google Sheet containing — a table that *doesn't* match the
+bookings template (a pilot tracker, a CRM export, anything). The app keeps it as a
+**custom table** and shows a **🔎 Ask your own sheet** panel: ask in plain English and
+get a number **and** a chart back.
+- *"total pipeline value by region"*, *"pie chart of spend by status"*,
+  *"average score by owner"*, *"count of rows by stage"*, *"highest deal value by city"*.
+- It auto-detects numeric vs categorical columns (even when a Sheet sends numbers as
+  text), so it works on columns it has never seen.
+- **Privacy holds:** the LLM sees only the **column names** (and a few category labels),
+  never your rows — it returns a structured intent and *our pandas code* runs the maths.
+  It also works with the **LLM switched off** (a keyword parser reads the real columns).
+- By design the AI does **not** write or execute arbitrary code on your data — same
+  "ask anything" flexibility, none of the security risk.
+
 ## Connect to Google Sheets (read data live · write the report back)
 The app can read raw data straight from a **private Google Sheet** and write the
 finished Action Center back to a **BD Report** tab — using a free Google

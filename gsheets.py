@@ -65,11 +65,14 @@ def _open(client, url_or_key):
 # read
 # ----------------------------------------------------------------------------
 def read_workbook(client, url_or_key):
-    """Read every worksheet, auto-detect bookings/partners/leads by columns."""
-    from ingest import _detect_kind
+    """Read every worksheet, auto-detect bookings/partners/leads by columns.
+    Any sheet that isn't one of those is kept as a 'generic' table you can still
+    query in the Ask-your-sheet chat. Returns (raw, generic, found)."""
+    from ingest import _detect_kind, coerce_types, _table_name
 
     sh = _open(client, url_or_key)
     raw = {"bookings": None, "partners": None, "leads": None}
+    generic = {}
     found = []
     for ws in sh.worksheets():
         records = ws.get_all_records()  # uses the header row as keys
@@ -81,17 +84,22 @@ def read_workbook(client, url_or_key):
         if kind in raw and raw[kind] is None:
             raw[kind] = df
             found.append(f"{ws.title} → {kind} ({len(df)} rows)")
+        elif kind == "unknown":
+            name = _table_name(ws.title or "table", generic)
+            generic[name] = coerce_types(df)
+            found.append(f"{ws.title} → custom table ({len(df)} rows × {len(df.columns)} cols)")
         else:
             found.append(f"{ws.title} → {kind} (ignored)")
-    return raw, found
+    return raw, generic, found
 
 
 def load_from_gsheet(client, url_or_key):
     """Read + clean + join straight into the app's data structure + merge log."""
     from ingest import _clean_and_join, _build_log
 
-    raw, found = read_workbook(client, url_or_key)
+    raw, generic, found = read_workbook(client, url_or_key)
     data, cleaning_logs = _clean_and_join(raw)
+    data["generic"] = generic
     merge_log = _build_log(data, found, cleaning_logs)
     merge_log["source"] = "Google Sheets"
     return data, merge_log

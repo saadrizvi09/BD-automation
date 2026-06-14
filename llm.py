@@ -212,8 +212,13 @@ def _intent_from_llm(question, schema):
         "a bookings table. Schema (columns): " + json.dumps(schema["columns"]) + ". "
         "Sample rows: " + json.dumps(schema["sample"]) + ".\n"
         'Return ONLY JSON: {"metric": one of [revenue,bookings,aov,rating,cancellations], '
-        '"group_by": column or null, "filter": {column: value} or {}, '
-        '"chart_type": one of [bar,line,none]}.\n'
+        '"group_by": one of [city, service_category, week] or null, '
+        '"filter": {column: value} or {}, '
+        '"chart_type": one of [pie,bar,line,none]}.\n'
+        "Rules: if the user asks for a pie/bar/line chart (or 'share', 'split', "
+        "'breakdown', 'distribution'), set chart_type to that AND set a group_by "
+        "(city or service_category) so the chart has slices/bars. Use 'line' for "
+        "trends over time (group_by=week). Use chart_type 'none' for a single number.\n"
         f"Question: {question}"
     )
     text = _chat([{"role": "user", "content": prompt}], max_tokens=300, temperature=0)
@@ -241,6 +246,18 @@ def _intent_from_keywords(question, bookings):
     if "revenue" in q or "gmv" in q or "sales" in q:
         intent["metric"] = "revenue"
 
+    # chart type the user asked for
+    wants_chart = any(w in q for w in (
+        "pie", "bar", "line", "chart", "graph", "plot", "trend",
+        "breakdown", "distribution", "share", "split", "visual",
+    ))
+    if "pie" in q or "share" in q or "split" in q or "breakdown" in q or "distribution" in q:
+        intent["chart_type"] = "pie"
+    elif "line" in q or "trend" in q or "over time" in q:
+        intent["chart_type"] = "line"
+    else:
+        intent["chart_type"] = "bar"
+
     # filter by known city / category values present in the data
     for city in bookings["city"].dropna().unique():
         if city.lower() in q:
@@ -250,13 +267,17 @@ def _intent_from_keywords(question, bookings):
             intent["filter"]["service_category"] = cat
 
     # group-by detection
-    if "by city" in q or "per city" in q or "each city" in q:
+    if "by city" in q or "per city" in q or "each city" in q or "across cities" in q:
         intent["group_by"] = "city"
-    elif "by category" in q or "per category" in q or "by service" in q:
+    elif ("by category" in q or "per category" in q or "by service" in q
+          or "across categories" in q or "by services" in q):
         intent["group_by"] = "service_category"
-    elif "by week" in q or "trend" in q or "over time" in q:
+    elif "by week" in q or "trend" in q or "over time" in q or "weekly" in q:
         intent["group_by"] = "week"
         intent["chart_type"] = "line"
+    elif wants_chart:
+        # a chart was requested but no explicit grouping — pick a sensible axis
+        intent["group_by"] = "service_category" if intent["filter"] else "city"
     elif not intent["filter"]:
         intent["group_by"] = "city"
 
@@ -347,3 +368,212 @@ def chat_answer(question, bookings, history=None):
 # convenience alias from the spec
 def nl_query(question, bookings):
     return chat_answer(question, bookings)
+
+
+# ----------------------------------------------------------------------------
+# 5. Schema-agnostic Q&A — ask ANY uploaded sheet (not just the bookings table)
+#    Privacy: the LLM sees ONLY column names + a few category labels, never rows.
+#    It returns a structured intent; OUR pandas code runs the aggregation.
+# ----------------------------------------------------------------------------
+_AGGS = ("sum", "mean", "count", "min", "max", "median")
+_AGG_LABEL = {"sum": "Total", "mean": "Average", "count": "Count",
+              "min": "Min", "max": "Max", "median": "Median"}
+
+
+def table_schema(df, max_uniques=15):
+    """Privacy-safe description of an arbitrary table: column names + types + a
+    few unique labels for small categoricals. NEVER includes data rows."""
+    cols = []
+    for c in df.columns:
+        s = df[c]
+        if pd.api.types.is_numeric_dtype(s):
+            cols.append({"name": str(c), "type": "number"})
+        elif pd.api.types.is_datetime64_any_dtype(s):
+            cols.append({"name": str(c), "type": "date"})
+        else:
+            uniq = s.dropna().astype(str).unique()
+            info = {"name": str(c), "type": "text", "n_unique": int(len(uniq))}
+            info["values" if len(uniq) <= max_uniques else "sample_values"] = list(uniq[:max_uniques])
+            cols.append(info)
+    return {"columns": cols, "n_rows": int(len(df))}
+
+
+def _generic_intent_llm(question, schema):
+    prompt = (
+        "Translate the question into a JSON intent for a pandas aggregation over ONE table. "
+        "Use ONLY column names from this schema.\n"
+        f"SCHEMA: {json.dumps(schema)}\n"
+        'Return ONLY JSON: {"agg": one of [sum,mean,count,min,max,median], '
+        '"value_col": a NUMBER column name or null (null = count rows), '
+        '"group_by": a column name or null, '
+        '"filters": {column: value} using exact values from the schema, or {}, '
+        '"chart_type": one of [pie,bar,line,none], '
+        '"sort": "desc" or "asc", "top_n": integer or null}\n'
+        "Rules: value_col MUST be a number column. For 'how many'/'count' use agg=count, value_col=null. "
+        "If a chart/pie/bar/breakdown/trend is requested, set chart_type AND a group_by so it has slices/bars. "
+        "Use line for a trend over a date column. Use chart_type 'none' for a single number.\n"
+        f"QUESTION: {question}"
+    )
+    text = _chat([{"role": "user", "content": prompt}], max_tokens=300, temperature=0)
+    if not text:
+        return None
+    try:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        return json.loads(m.group(0)) if m else None
+    except Exception:
+        return None
+
+
+def _wb(q, words):
+    """Whole-word match — avoids 'pipeline' matching 'line', 'barber' matching 'bar'."""
+    return any(re.search(r"\b" + re.escape(w) + r"\b", q) for w in words)
+
+
+def _generic_intent_keywords(question, df):
+    """Offline fallback: infer the intent from the question + the real columns."""
+    q = question.lower()
+    numeric = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    dates = [c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])]
+    text_cols = [c for c in df.columns if c not in numeric and c not in dates]
+
+    if _wb(q, ("how many", "number of", "count", "rows")):
+        agg, value_col = "count", None
+    elif _wb(q, ("average", "avg", "mean")):
+        agg, value_col = "mean", None
+    elif _wb(q, ("highest", "max", "maximum", "largest", "most", "top")):
+        agg, value_col = "max", None
+    elif _wb(q, ("lowest", "min", "minimum", "smallest", "least")):
+        agg, value_col = "min", None
+    else:
+        agg, value_col = "sum", None
+
+    # value column: a numeric column named in the question, else the first numeric
+    for c in numeric:
+        cl = str(c).lower()
+        if _wb(q, (cl, cl.replace("_", " "))):
+            value_col = c
+            break
+    if value_col is None and agg != "count" and numeric:
+        value_col = numeric[0]
+
+    # group-by: only on an explicit "by/per/each <column>" phrase (a bare column
+    # mention is the measure, not the grouping — e.g. "total pipeline value")
+    group_by = None
+    for c in text_cols + dates:
+        cl = str(c).lower().replace("_", " ")
+        if any(p in q for p in (f"by {cl}", f"per {cl}", f"each {cl}",
+                                f"across {cl}", f"for each {cl}", f"group by {cl}")):
+            group_by = c
+            break
+
+    # chart type (whole-word so 'pipeline' != 'line', 'barber' != 'bar')
+    if _wb(q, ("pie", "share", "split", "breakdown", "distribution", "proportion")):
+        chart_type = "pie"
+    elif _wb(q, ("line", "trend", "over time", "timeline")):
+        chart_type = "line"
+        if group_by is None and dates:
+            group_by = dates[0]
+    elif _wb(q, ("bar", "chart", "graph", "plot", "visual", "compare", "ranking", "rank")):
+        chart_type = "bar"
+    else:
+        chart_type = "none"
+    if chart_type != "none" and group_by is None and text_cols:
+        group_by = text_cols[0]
+
+    # filter: a categorical value mentioned in the question
+    filters = {}
+    for c in text_cols:
+        for val in df[c].dropna().astype(str).unique()[:300]:
+            v = str(val).strip().lower()
+            if len(v) >= 3 and v in q:
+                filters[c] = val
+                break
+        if filters:
+            break
+
+    return {"agg": agg, "value_col": value_col, "group_by": group_by,
+            "filters": filters, "chart_type": chart_type, "sort": "desc", "top_n": None}
+
+
+def _fmt_num(v):
+    try:
+        f = float(v)
+    except Exception:
+        return str(v)
+    if pd.isna(f):
+        return "n/a"
+    if f == int(f):
+        return f"{int(f):,}"
+    return f"{f:,.2f}"
+
+
+def run_generic(intent, df):
+    """Execute a generic intent in pandas over an arbitrary table.
+    Returns (answer_text, result_dataframe_or_None)."""
+    work = df.copy()
+    for col, val in (intent.get("filters") or {}).items():
+        if col in work.columns:
+            work = work[work[col].astype(str).str.strip().str.lower() == str(val).strip().lower()]
+
+    agg = (intent.get("agg") or "count").lower()
+    if agg not in _AGGS:
+        agg = "count"
+    value_col = intent.get("value_col")
+    if value_col is not None and value_col not in work.columns:
+        value_col = None
+    gb = intent.get("group_by")
+    if gb is not None and gb not in work.columns:
+        gb = None
+
+    label = value_col or "rows"
+    agg_label = _AGG_LABEL.get(agg, agg.title())
+
+    if gb:
+        if agg == "count" or value_col is None:
+            res = work.groupby(gb).size()
+            colname, label = "count", "rows"
+        else:
+            num = pd.to_numeric(work[value_col], errors="coerce")
+            res = num.groupby(work[gb]).agg(agg)
+            colname = f"{agg}_{value_col}"
+        res = res.dropna().sort_values(ascending=(intent.get("sort") == "asc"))
+        if intent.get("top_n"):
+            try:
+                res = res.head(int(intent["top_n"]))
+            except Exception:
+                pass
+        if len(res) == 0:
+            return "No matching rows for that question.", None
+        top_label, top_val = res.index[0], res.iloc[0]
+        ans = (f"**{agg_label} of {label} by {gb}** — top: "
+               f"**{top_label} = {_fmt_num(top_val)}**. See the breakdown below.")
+        return ans, res.to_frame(colname)
+
+    if agg == "count" or value_col is None:
+        val = len(work)
+        label = "rows"
+    else:
+        val = pd.to_numeric(work[value_col], errors="coerce").agg(agg)
+    filt = ", ".join(f"{k}={v}" for k, v in (intent.get("filters") or {}).items())
+    where = f" ({filt})" if filt else ""
+    return f"**{agg_label} of {label}{where}: {_fmt_num(val)}**", None
+
+
+def ask_table(question, df):
+    """Schema-agnostic Q&A over any table. Returns (answer, result_df, chart_intent)."""
+    schema = table_schema(df)
+    intent = _generic_intent_llm(question, schema)
+    if not isinstance(intent, dict) or "agg" not in intent:
+        intent = _generic_intent_keywords(question, df)
+    try:
+        answer, res = run_generic(intent, df)
+    except Exception:
+        answer, res = ("I couldn't compute that — try e.g. 'total <column> by <column>', "
+                       "'count by <column>', or 'pie chart of <column> by <column>'."), None
+    chart_intent = {
+        "group_by": intent.get("group_by"),
+        "chart_type": intent.get("chart_type", "none"),
+        "metric": intent.get("value_col") or "count",
+        "agg": intent.get("agg"),
+    }
+    return answer, res, chart_intent
